@@ -58,21 +58,26 @@ def main(opts):
     ngp_dir = torch.tensor([1, 1, 1], dtype=torch.float32, device=device) / np.sqrt(3) # 3,
     ngp_dir = ngp_dir[None].expand(ngp_pos.shape[0], -1) # nx*ny*nz, 3
 
-    sigma, color = model.forward(ngp_pos, ngp_dir) # nx*ny*nz, | nx*ny*nz, 3
-    occupied = (sigma >= opts.density_thresh) # nx*ny*nz,
-
-    # Write to Minecraft Anvil format
+    # Write to Minecraft Anvil format in chunks
     region = anvil.EmptyRegion(0, 0)
     stone = anvil.Block("minecraft", "stone")
-    dirt = anvil.Block("minecraft", "dirt")
 
-    block_pos = block_pos.cpu().numpy()
-    occupied_idxs = [int(x) for x in torch.nonzero(occupied).cpu().numpy()]
-    for idx in occupied_idxs:
-        x = int(block_pos[idx, 0])
-        y = int(block_pos[idx, 1])
-        z = int(block_pos[idx, 2])
-        region.set_block(stone, x, y, z)
+    chunk_size = 2**20
+    for i in range(0, ngp_dir.shape[0], chunk_size):
+        block_pos_ch = block_pos[i:i+chunk_size] # chunk, 3
+        ngp_pos_ch = ngp_pos[i:i+chunk_size] # chunk, 3
+        ngp_dir_ch = ngp_dir[i:i+chunk_size] # chunk, 3
+
+        sigma_ch, color_ch = model.forward(ngp_pos_ch, ngp_dir_ch) # nx*ny*nz, | nx*ny*nz, 3
+        occupied_ch = (sigma_ch >= opts.density_thresh) # nx*ny*nz,
+
+        block_pos_ch = block_pos_ch.cpu().numpy() # chunk, 3
+        occupied_idxs_ch = [int(x) for x in torch.nonzero(occupied_ch).cpu().numpy()]
+        for idx in occupied_idxs_ch:
+            x = int(block_pos_ch[idx, 0])
+            y = int(block_pos_ch[idx, 1])
+            z = int(block_pos_ch[idx, 2])
+            region.set_block(stone, x, y, z)
 
     region.save(f"torch-ngp/{opts.workspace}/r.0.0.mca")
     

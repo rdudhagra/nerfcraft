@@ -3,6 +3,8 @@ build/
 *.egg-info/
 *.so
 
+*_nerf/
+
 tmp*
 data/
 trial*/
