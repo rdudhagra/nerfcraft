@@ -1,25 +1,73 @@
 import argparse
+import numpy as np
+import sys
 import torch
+
+sys.path.insert(0, "anvil-parser")
+import anvil
+
+sys.path.insert(0, "torch-ngp")
 from nerf.network_tcnn import NeRFNetwork
+from nerf.utils import seed_everything
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-def main():
-    seed_everything(opt.seed)
+def main(opts):
+    seed_everything(opts.seed)
 
     model = NeRFNetwork(
         encoding="hashgrid",
-        bound=opt.bound,
+        bound=opts.bound,
         cuda_ray=True,
         density_scale=1,
-        min_near=opt.min_near,
-        density_thresh=opt.density_thresh,
-        bg_radius=opt.bg_radius,
+        min_near=opts.min_near,
+        density_thresh=opts.density_thresh,
+        bg_radius=opts.bg_radius,
     )
+
+    # Sample whether each block is occupied from NGP model
+    # Use YZX iteration order, following Anvil format
+    block_xs = torch.arange(opts.world_min[0], opts.world_max[0], dtype=torch.int64, device=device) # nx,
+    block_ys = torch.arange(opts.world_min[1], opts.world_max[1], dtype=torch.int64, device=device) # ny,
+    block_zs = torch.arange(opts.world_min[2], opts.world_max[2], dtype=torch.int64, device=device) # nz,
+    block_pos = torch.cartesian_prod(block_ys, block_zs, block_xs) # nx*ny*nz, 3
+
+    ngp_xs = torch.linspace(-opts.bound, opts.bound, block_xs.shape[0], device=device) # nx,
+    ngp_ys = torch.linspace(-opts.bound, opts.bound, block_xs.shape[0], device=device) # ny,
+    ngp_zs = torch.linspace(-opts.bound, opts.bound, block_xs.shape[0], device=device) # nz,
+    ngp_pos = torch.cartesian_prod(ngp_ys, ngp_zs, ngp_xs) # nx*ny*nz, 3
+
+    ngp_dir = torch.tensor([1, 1, 1], dtype=torch.float32, device=device) / np.sqrt(3) # 3,
+    ngp_dir = ngp_dir[None].expand(ngp_pos.shape[0], -1) # nx*ny*nz, 3
+
+    sigma, color = model.forward(ngp_pos, ngp_dir) # nx*ny*nz, | nx*ny*nz, 3
+    occupied = (sigma >= opts.density_thresh) # nx*ny*nz,
+
+    # Write to Minecraft Anvil format
+    region = anvil.EmptyRegion(0, 0)
+    stone = anvil.Block("minecraft", "stone")
+
+    block_pos = block_pos.cpu().numpy()
+    occupied_idxs = [int(x) for x in torch.nonzero(occupied).cpu().numpy()]
+    """
+    for idx in occupied_idxs:
+        x = float(block_pos[idx, 0])
+        y = float(block_pos[idx, 1])
+        z = float(block_pos[idx, 2])
+        print(x, y, z)
+        region.set_block(stone, x, y, z)
+    """
+    for y in range(16):
+        for x in range(16):
+            for z in range(16):
+                region.set_block(stone, x, y, z)
+
+    region.save(f"{opts.workspace}/r.0.0.mca")
+    
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--workspace", type=str, default="workspace")
+    parser.add_argument("--workspace", type=str, default="torch-ngp/trial_nerf")
     parser.add_argument("--seed", type=int, default=0)
 
     # Dataset options
@@ -36,6 +84,14 @@ def parse_args():
     parser.add_argument("--bg_radius", type=float, default=-1,
             help="If positive, use a background model at sphere(bg_radius)")
 
+    # Minecraft options
+    parser.add_argument("--world_min", type=int, nargs="*", default=[0, 0, 0],
+            help="Minimum corner of scene in world")
+    parser.add_argument("--world_max", type=int, nargs="*", default=[64, 64, 64],
+            help="Maximum corner of scene in world")
+
+    opts = parser.parse_args()
+    return opts
 
 
 if __name__ == "__main__":
