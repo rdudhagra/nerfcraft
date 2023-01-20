@@ -4,6 +4,7 @@ import numpy as np
 import os
 import sys
 import torch
+from PIL import Image
 
 sys.path.insert(0, "anvil-parser")
 import anvil
@@ -13,6 +14,13 @@ from nerf.network_tcnn import NeRFNetwork
 from nerf.utils import seed_everything
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+def avg_rgb(block_idx):
+    img = np.array(Image.open(f"colors/textures/{block_idx}.png"), dtype=np.float32)[..., :3] / 255. # H, W, 3
+    img_avg = np.mean(img.reshape(-1, 3), axis=0) # 3,
+    return img_avg
+
 
 def main(opts):
     seed_everything(opts.seed)
@@ -43,6 +51,15 @@ def main(opts):
         if len(unexpected_keys) > 0:
             print(f"Warning: Unexpected keys {unexpected_keys}")
 
+    # Load color map
+    with open("colors/blocks_full.txt", "r") as f:
+        allow_blocks = set(f.read().splitlines())
+    block_ids = set([filename.replace(".png", "") for filename in os.listdir("colors/textures")])
+    block_ids = list(block_ids & allow_blocks)
+    block_avg_rgbs = torch.tensor(
+        np.array([avg_rgb(idx) for idx in block_ids]), dtype=torch.float32, device=device
+    ) # ncolors, 3
+
     # Sample whether each block is occupied from NGP model
     # Use YZX iteration order, following Anvil format
     block_xs = torch.arange(opts.world_min[0], opts.world_max[0], dtype=torch.int64, device=device) # nx,
@@ -55,20 +72,43 @@ def main(opts):
     ngp_zs = torch.linspace(-opts.bound, opts.bound, block_xs.shape[0], device=device) # nz,
     ngp_pos = torch.cartesian_prod(ngp_ys, ngp_zs, ngp_xs) # nx*ny*nz, 3
 
-    ngp_dir = torch.tensor([1, 1, 1], dtype=torch.float32, device=device) / np.sqrt(3) # 3,
-    ngp_dir = ngp_dir[None].expand(ngp_pos.shape[0], -1) # nx*ny*nz, 3
+    ngp_dirs = torch.tensor(
+        [[0, 0, 1], [0, 0, -1], [0, 1, 0], [0, -1, 0], [1, 0, 0], [-1, 0, 0]],
+        dtype=torch.float32, device=device
+    ) # 6, 3
+    ngp_dirs = ngp_dirs[:, None].expand(-1, ngp_pos.shape[0], -1) # view_dirs, nx*ny*nz, 3
 
     # Write to Minecraft Anvil format in chunks
     region = anvil.EmptyRegion(0, 0)
-    stone = anvil.Block("minecraft", "stone")
+    blocks = [anvil.Block("minecraft", idx) for idx in block_ids]
 
-    chunk_size = 2**20
-    for i in range(0, ngp_dir.shape[0], chunk_size):
+    chunk_size = 2**19
+    for i in range(0, ngp_pos.shape[0], chunk_size):
         block_pos_ch = block_pos[i:i+chunk_size] # chunk, 3
         ngp_pos_ch = ngp_pos[i:i+chunk_size] # chunk, 3
-        ngp_dir_ch = ngp_dir[i:i+chunk_size] # chunk, 3
+        ngp_dirs_ch = ngp_dirs[:, i:i+chunk_size] # view_dirs, chunk, 3
 
-        sigma_ch, color_ch = model.forward(ngp_pos_ch, ngp_dir_ch) # nx*ny*nz, | nx*ny*nz, 3
+        # Compute density (once)
+        density_out = model.density(ngp_pos_ch) # nx*ny*nz, | nx*ny*nz, geo_feat_dim
+        sigma_ch = density_out["sigma"]
+        geo_feat_ch = density_out["geo_feat"]
+
+        # Compute color from six view directions
+        color_ch = torch.zeros(sigma_ch.shape[0], 3, dtype=torch.float32, device=device) # nx*ny*nz, 3
+        for ngp_dir_ch in ngp_dirs_ch:
+            color_part = model.color(ngp_pos_ch, ngp_dir_ch, geo_feat=geo_feat_ch) # nx*ny*nz, 3
+            color_ch += color_part
+        color_ch /= ngp_dirs_ch.shape[0]
+
+        # Compute nearest color in block list
+        block_idxs_ch = torch.zeros(sigma_ch.shape[0], dtype=torch.int64, device=device) # nx*ny*nz,
+        color_dists_ch = torch.full((sigma_ch.shape[0],), np.inf, dtype=torch.float32, device=device) # nx*ny*nz,
+        for i, block_rgb in enumerate(block_avg_rgbs):
+            color_dist_ch = torch.sum((color_ch - block_rgb[None]) ** 2, dim=-1) # nx*ny*nz,
+            block_idxs_ch = torch.where(color_dist_ch < color_dists_ch, i, block_idxs_ch) # nx*ny*nz,
+            color_dists_ch = torch.min(color_dist_ch, color_dists_ch) # nx*ny*nz,
+
+        # Compute occupancy
         occupied_ch = (sigma_ch >= opts.density_thresh) # nx*ny*nz,
 
         block_pos_ch = block_pos_ch.cpu().numpy() # chunk, 3
@@ -77,7 +117,8 @@ def main(opts):
             x = int(block_pos_ch[idx, 0])
             y = int(block_pos_ch[idx, 1])
             z = int(block_pos_ch[idx, 2])
-            region.set_block(stone, x, y, z)
+            block_idx = block_idxs_ch[idx]
+            region.set_block(blocks[block_idx], x, y, z)
 
     region.save(f"torch-ngp/{opts.workspace}/r.0.0.mca")
     
