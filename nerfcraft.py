@@ -1,5 +1,7 @@
 import argparse
+import glob
 import numpy as np
+import os
 import sys
 import torch
 
@@ -25,6 +27,22 @@ def main(opts):
         bg_radius=opts.bg_radius,
     )
 
+    # Load latest model checkpoint
+    checkpoint_list = sorted(glob.glob(f"torch-ngp/{opts.workspace}/checkpoints/ngp_ep*.pth"))
+    if checkpoint_list:
+        checkpoint = checkpoint_list[-1]
+        print(f"Loading latest checkpoint {checkpoint}")
+    checkpoint_dict = torch.load(checkpoint, map_location=device)
+
+    if "model" not in checkpoint_dict:
+        model.load_state_dict(checkpoint_dict)
+    else:
+        missing_keys, unexpected_keys = model.load_state_dict(checkpoint_dict["model"], strict=False)
+        if len(missing_keys) > 0:
+            print(f"Warning: Missing keys {missing_keys}")
+        if len(unexpected_keys) > 0:
+            print(f"Warning: Unexpected keys {unexpected_keys}")
+
     # Sample whether each block is occupied from NGP model
     # Use YZX iteration order, following Anvil format
     block_xs = torch.arange(opts.world_min[0], opts.world_max[0], dtype=torch.int64, device=device) # nx,
@@ -46,28 +64,22 @@ def main(opts):
     # Write to Minecraft Anvil format
     region = anvil.EmptyRegion(0, 0)
     stone = anvil.Block("minecraft", "stone")
+    dirt = anvil.Block("minecraft", "dirt")
 
     block_pos = block_pos.cpu().numpy()
     occupied_idxs = [int(x) for x in torch.nonzero(occupied).cpu().numpy()]
-    """
     for idx in occupied_idxs:
-        x = float(block_pos[idx, 0])
-        y = float(block_pos[idx, 1])
-        z = float(block_pos[idx, 2])
-        print(x, y, z)
+        x = int(block_pos[idx, 0])
+        y = int(block_pos[idx, 1])
+        z = int(block_pos[idx, 2])
         region.set_block(stone, x, y, z)
-    """
-    for y in range(16):
-        for x in range(16):
-            for z in range(16):
-                region.set_block(stone, x, y, z)
 
-    region.save(f"{opts.workspace}/r.0.0.mca")
+    region.save(f"torch-ngp/{opts.workspace}/r.0.0.mca")
     
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--workspace", type=str, default="torch-ngp/trial_nerf")
+    parser.add_argument("--workspace", type=str, default="trial_nerf")
     parser.add_argument("--seed", type=int, default=0)
 
     # Dataset options
@@ -87,7 +99,7 @@ def parse_args():
     # Minecraft options
     parser.add_argument("--world_min", type=int, nargs="*", default=[0, 0, 0],
             help="Minimum corner of scene in world")
-    parser.add_argument("--world_max", type=int, nargs="*", default=[64, 64, 64],
+    parser.add_argument("--world_max", type=int, nargs="*", default=[256, 256, 256],
             help="Maximum corner of scene in world")
 
     opts = parser.parse_args()
