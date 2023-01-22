@@ -9,7 +9,7 @@ import json
 from multiprocessing import Pool
 
 # Variables
-DATA_DIR = "./data/"
+DATA_DIR = "./data/hamerschlag"
 CAMERA_PARAMS = {
     "camera_angle_x": None,
     "camera_angle_y": None,
@@ -24,6 +24,7 @@ CAMERA_PARAMS = {
     "w": 4000.0,
     "h": 2250.0,
     "aabb_scale": 4,
+    "offset": [0, 0, -1],
 }
 
 # Some post-processing
@@ -50,7 +51,7 @@ def dms_to_decimal(dms):
 
 
 def process_image(f):
-    filepath = os.path.join(DATA_DIR, f)
+    filepath = os.path.join(DATA_DIR, "images", f)
 
     # Read the image
     img = pyexiv2.Image(filepath)
@@ -85,13 +86,14 @@ def process_image(f):
 
     # Rotation matrix
     r = Rotation.from_euler(
-        "zyx", [yaw_deg, pitch_deg, roll_deg], degrees=True
+        "zyx", [-yaw_deg, -pitch_deg - 90, roll_deg], degrees=True
     ).as_matrix()
+    r = r.T
 
     # Make the homogeneous transformation matrix
     T = np.eye(4)
     T[:3, :3] = r
-    T[:3, 3] = np.array([x, y, alt_m])
+    T[:3, 3] = np.array([-x, y, alt_m])
 
     # Compute the sharpness
     im = Image.open(filepath).convert("L")  # to grayscale
@@ -104,7 +106,7 @@ def process_image(f):
 
     # Construct the metadata frame
     new_frame = {}
-    new_frame["file_path"] = filepath
+    new_frame["file_path"] = os.path.join("images", f)
     new_frame["sharpness"] = sharpness  # What does this do? I don't know
     new_frame["transform_matrix"] = T.tolist()
 
@@ -121,7 +123,7 @@ if __name__ == "__main__":
     metadata["frames"] = []
 
     # Find all the files
-    files = [f for f in os.listdir(DATA_DIR) if ".JPG" in f]
+    files = [f for f in os.listdir(os.path.join(DATA_DIR, "images")) if ".JPG" in f]
     files.sort()
 
     # Initial processing of the files: extract metadata
@@ -145,6 +147,34 @@ if __name__ == "__main__":
         T[1, 3] -= avg_y
         frame["transform_matrix"] = T.tolist()
 
+    # Post-processing: scale the data down to be a max width of 6
+    min_x = 0
+    min_y = 0
+    max_x = 0
+    max_y = 0
+    for frame in metadata["frames"]:
+        T = np.array(frame["transform_matrix"])
+        min_x = min(min_x, T[0, 3])
+        min_y = min(min_y, T[1, 3])
+        max_x = max(max_x, T[0, 3])
+        max_y = max(max_y, T[1, 3])
+
+    scale = 6 / max(max_x - min_x, max_y - min_y)
+    
+    for frame in metadata["frames"]:
+        T = np.array(frame["transform_matrix"])
+        T[0, 3] *= scale
+        T[1, 3] *= scale
+        T[2, 3] *= scale
+        frame["transform_matrix"] = T.tolist()
+
+    for frame in metadata["frames"]:
+        T = np.array(frame["transform_matrix"])
+        T[0, 3] += metadata["offset"][0]
+        T[1, 3] += metadata["offset"][1]
+        T[2, 3] += metadata["offset"][2]
+        frame["transform_matrix"] = T.tolist()
+
     # Save the metadata
-    with open("transform.json", "w") as f:
+    with open(os.path.join(DATA_DIR, "transforms.json"), "w") as f:
         json.dump(metadata, f, indent=2)
