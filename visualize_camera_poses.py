@@ -8,7 +8,7 @@ from mpl_toolkits.mplot3d import Axes3D
 import os
 
 # Variables
-DATA_DIR = "./data/hamerschlag"
+DATA_DIR = "./torch-ngp/data/hamerschlag"
 
 # Create 3D plot
 fig = plt.figure()
@@ -34,34 +34,45 @@ with open(os.path.join(DATA_DIR, "transforms.json"), "r") as f:
 
     for frame in data["frames"]:
         transform_matrix = frame["transform_matrix"]
-
         start_point = np.array([0, 0, 0, 1])
-        end_point = np.array([0, 0, -1, 1])
-
         start_point = np.dot(transform_matrix, start_point)
-        end_point = np.dot(transform_matrix, end_point)
 
-        a = Arrow3D(
-            [start_point[0], end_point[0]],
-            [start_point[1], end_point[1]],
-            [start_point[2], end_point[2]],
-            mutation_scale=5,
-            lw=2,
-            arrowstyle="-|>",
-            color="r",
-        )
-        ax.add_artist(a)
+        for color, end_point in {
+            "r": np.array([1, 0, 0, 1]),
+            "g": np.array([0, 1, 0, 1]),
+            "b": np.array([0, 0, 1, 1]),
+        }.items():
+            end_point = np.dot(transform_matrix, end_point)
 
-        # Plot line
-        ax.plot(
-            [start_point[0], start_point[0]],
-            [start_point[1], start_point[1]],
-            [start_point[2], start_point[2]],
-            color="r",
-        )
+            a = Arrow3D(
+                [start_point[0], end_point[0]],
+                [start_point[1], end_point[1]],
+                [start_point[2], end_point[2]],
+                mutation_scale=5,
+                lw=2,
+                arrowstyle="-|>",
+                color=color,
+            )
+            ax.add_artist(a)
+
+            # Plot line
+            ax.plot(
+                [start_point[0], start_point[0]],
+                [start_point[1], start_point[1]],
+                [start_point[2], start_point[2]],
+                color=color,
+            )
 
 ax.set_xlabel('X')
 ax.set_ylabel('Y')
 ax.set_zlabel('Z')
+
+# Set axes equal
+limits = np.array([ax.get_xlim3d(), ax.get_ylim3d(), ax.get_zlim3d()])
+x, y, z = np.mean(limits, axis=1)
+radius = 0.5 * np.max(np.abs(limits[:, 1] - limits[:, 0]))
+ax.set_xlim3d([x - radius, x + radius])
+ax.set_ylim3d([y - radius, y + radius])
+ax.set_zlim3d([z - radius, z + radius])
 
 plt.show()

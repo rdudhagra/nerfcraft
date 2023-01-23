@@ -5,11 +5,12 @@ import pyexiv2
 import os
 import utm
 import json
+import tqdm
 
 from multiprocessing import Pool
 
 # Variables
-DATA_DIR = "./data/hamerschlag"
+DATA_DIR = "torch-ngp/data/gates"
 CAMERA_PARAMS = {
     "camera_angle_x": None,
     "camera_angle_y": None,
@@ -57,7 +58,6 @@ def process_image(f):
     img = pyexiv2.Image(filepath)
     xmp_data = img.read_xmp()
     exif_data = img.read_exif()
-    img.close()
 
     # Parse the data
     lat_str = exif_data["Exif.GPSInfo.GPSLatitude"]
@@ -86,9 +86,13 @@ def process_image(f):
 
     # Rotation matrix
     r = Rotation.from_euler(
-        "zyx", [-yaw_deg, -pitch_deg - 90, roll_deg], degrees=True
+        "xyz", [roll_deg, pitch_deg, yaw_deg], degrees=True
     ).as_matrix()
-    r = r.T
+    r = np.dot(np.array([ # xyz -> zxy
+        [0, 1, 0],
+        [0, 0, 1],
+        [1, 0, 0],
+    ]), r.T).T
 
     # Make the homogeneous transformation matrix
     T = np.eye(4)
@@ -133,7 +137,7 @@ if __name__ == "__main__":
     # Post-processing: normalize poses to be centered at (0,0)
     avg_x = 0
     avg_y = 0
-    for frame in metadata["frames"]:
+    for frame in tqdm.tqdm(metadata["frames"]):
         T = np.array(frame["transform_matrix"])
         avg_x += T[0, 3]
         avg_y += T[1, 3]
@@ -141,7 +145,7 @@ if __name__ == "__main__":
     avg_x /= len(metadata["frames"])
     avg_y /= len(metadata["frames"])
 
-    for frame in metadata["frames"]:
+    for frame in tqdm.tqdm(metadata["frames"]):
         T = np.array(frame["transform_matrix"])
         T[0, 3] -= avg_x
         T[1, 3] -= avg_y
@@ -152,7 +156,7 @@ if __name__ == "__main__":
     min_y = 0
     max_x = 0
     max_y = 0
-    for frame in metadata["frames"]:
+    for frame in tqdm.tqdm(metadata["frames"]):
         T = np.array(frame["transform_matrix"])
         min_x = min(min_x, T[0, 3])
         min_y = min(min_y, T[1, 3])
@@ -161,14 +165,14 @@ if __name__ == "__main__":
 
     scale = 6 / max(max_x - min_x, max_y - min_y)
     
-    for frame in metadata["frames"]:
+    for frame in tqdm.tqdm(metadata["frames"]):
         T = np.array(frame["transform_matrix"])
         T[0, 3] *= scale
         T[1, 3] *= scale
         T[2, 3] *= scale
         frame["transform_matrix"] = T.tolist()
 
-    for frame in metadata["frames"]:
+    for frame in tqdm.tqdm(metadata["frames"]):
         T = np.array(frame["transform_matrix"])
         T[0, 3] += metadata["offset"][0]
         T[1, 3] += metadata["offset"][1]
