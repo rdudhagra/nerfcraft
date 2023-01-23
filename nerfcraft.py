@@ -17,7 +17,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 def avg_rgb(block_idx):
-    img = np.array(Image.open(f"colors/textures/{block_idx}.png"), dtype=np.float32)[..., :3] / 255. # H, W, 3
+    img = np.array(Image.open(f"colors/textures/{block_idx}.png"), dtype=np.float32)[..., :3] # H, W, 3
     img_avg = np.mean(img.reshape(-1, 3), axis=0) # 3,
     return img_avg
 
